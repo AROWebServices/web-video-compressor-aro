@@ -92,7 +92,7 @@ final class AppModel {
     init() {
         refreshTools()
         // Videos passed on the command line are queued at launch, e.g.
-        // open "Web Video Compressor.app" --args clip.mov
+        // open "Web Video Compressor ARO.app" --args clip.mov
         add(CommandLine.arguments.dropFirst()
             .filter { !$0.hasPrefix("-") }
             .map { URL(fileURLWithPath: $0) })

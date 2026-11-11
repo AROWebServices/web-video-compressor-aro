@@ -1,4 +1,4 @@
-# Web Video Compressor
+# Web Video Compressor ARO
 
 A macOS app that compresses videos for use on websites.
 
@@ -25,7 +25,7 @@ A macOS app that compresses videos for use on websites.
 ## Build, test, run
 
     ./Scripts/test.sh                  # unit tests, plus real encodes when FFmpeg is installed
-    ./Scripts/build-app.sh             # creates dist/Web Video Compressor.app
+    ./Scripts/build-app.sh             # creates dist/Web Video Compressor ARO.app
     ./Scripts/build-app.sh --install   # also copies it to /Applications
     ./Scripts/make-icon.sh             # only if you change the icon drawing
 
@@ -48,12 +48,12 @@ get it onto another Mac is to build it there:
 
 Or make a disk image and carry that across (Apple Silicon Macs only):
 
-1. Here, run `./Scripts/make-dmg.sh`. It writes `dist/Web Video Compressor <version>.dmg`.
+1. Here, run `./Scripts/make-dmg.sh`. It writes `dist/Web Video Compressor ARO <version>.dmg`.
 2. On the other Mac, open the `.dmg` and drag the app onto Applications.
 3. Install Homebrew (https://brew.sh), then `brew install ffmpeg`.
 4. If macOS refuses to open the app because it arrived from elsewhere, use
    System Settings → Privacy & Security → Open Anyway, or clear the flag once:
-   `xattr -dr com.apple.quarantine "/Applications/Web Video Compressor.app"`.
+   `xattr -dr com.apple.quarantine "/Applications/Web Video Compressor ARO.app"`.
 
 ## Where FFmpeg comes from
 
@@ -67,7 +67,7 @@ It looks for both programs, side by side, in this order:
 The simplest install is Homebrew: `brew install ffmpeg`. At launch the app asks
 FFmpeg which encoders it has and only offers the formats that build supports.
 
-To queue videos at launch: `open "dist/Web Video Compressor.app" --args clip.mov`
+To queue videos at launch: `open "dist/Web Video Compressor ARO.app" --args clip.mov`
 
 ## Licensing
 

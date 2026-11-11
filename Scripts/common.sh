@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${WVC_BUILD_DIR:-$HOME/Library/Caches/WebVideoCompressor-build}"
-APP_NAME="Web Video Compressor"
+APP_NAME="Web Video Compressor ARO"
 
 # Without full Xcode (Command Line Tools only) two things need help:
 #  - the macOS 27 SDK turns SwiftUI's @State into a macro whose compiler plugin

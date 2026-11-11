@@ -12,7 +12,7 @@ struct WebVideoCompressorApp: App {
     }
 
     var body: some Scene {
-        Window("Web Video Compressor", id: "main") {
+        Window("Web Video Compressor ARO", id: "main") {
             ContentView()
                 .environment(model)
                 .frame(minWidth: 820, idealWidth: 900, minHeight: 540, idealHeight: 600)
