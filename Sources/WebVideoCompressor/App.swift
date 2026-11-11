@@ -37,7 +37,10 @@ struct WebVideoCompressorApp: App {
                     .disabled(model.selectedItem == nil)
                 Button("Clear Finished") { model.clearFinished() }
                     .keyboardShortcut("k")
-                    .disabled(model.savings == nil)
+                    .disabled(!model.hasFinished)
+                Button("Clear All") { model.clearAll() }
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
+                    .disabled(!model.canClearAll)
                 Divider()
                 Button("Reveal Results in Finder") { model.revealAll() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])

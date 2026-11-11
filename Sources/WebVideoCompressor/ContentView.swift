@@ -496,6 +496,16 @@ private struct BottomBar: View {
                 .lineLimit(1)
             Spacer()
 
+            if !model.items.isEmpty {
+                Menu("Clear") {
+                    Button("Clear Finished") { model.clearFinished() }
+                        .disabled(!model.hasFinished)
+                    Button(model.isRunning ? "Clear All Except Running" : "Clear All") { model.clearAll() }
+                        .disabled(!model.canClearAll)
+                }
+                .fixedSize()
+                .help("Remove videos from the queue. Files on disk are not touched.")
+            }
             Button("Add…") { model.chooseFiles() }
             if model.isRunning {
                 Button("Cancel All", role: .cancel) { model.cancelAll() }

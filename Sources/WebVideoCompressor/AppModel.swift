@@ -256,6 +256,15 @@ final class AppModel {
         for item in items where item.result != nil { remove(item) }
     }
 
+    /// Empties the queue. Videos that are encoding or waiting stay, so a
+    /// running batch is never thrown away by accident; cancel those first.
+    func clearAll() {
+        for item in items where !item.isBusy { remove(item) }
+    }
+
+    var hasFinished: Bool { items.contains { $0.result != nil } }
+    var canClearAll: Bool { items.contains { !$0.isBusy } }
+
     func setOverride(_ enabled: Bool, for item: QueueItem) {
         item.override = enabled ? (item.override ?? batchSettings) : nil
     }
