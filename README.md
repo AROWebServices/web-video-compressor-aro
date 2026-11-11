@@ -50,10 +50,11 @@ Or make a disk image and carry that across (Apple Silicon Macs only):
 
 1. Here, run `./Scripts/make-dmg.sh`. It writes `dist/Web Video Compressor ARO <version>.dmg`.
 2. On the other Mac, open the `.dmg` and drag the app onto Applications.
-3. Install Homebrew (https://brew.sh), then `brew install ffmpeg`.
-4. If macOS refuses to open the app because it arrived from elsewhere, use
+3. If macOS refuses to open the app because it arrived from elsewhere, use
    System Settings → Privacy & Security → Open Anyway, or clear the flag once:
    `xattr -dr com.apple.quarantine "/Applications/Web Video Compressor ARO.app"`.
+4. Open the app. If FFmpeg is missing, click **Install FFmpeg** in the yellow banner:
+   Terminal opens, installs Homebrew if needed (it asks for the Mac password), then FFmpeg.
 
 ## Where FFmpeg comes from
 

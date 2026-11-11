@@ -154,7 +154,9 @@ final class AppModel {
     func refreshTools() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?.appendingPathComponent("WebVideoCompressor/bin").path
-        tools = FFmpegLocator.locate(
+        // WVC_HIDE_FFMPEG=1 pretends nothing is installed, to try the setup banner.
+        let hidden = ProcessInfo.processInfo.environment["WVC_HIDE_FFMPEG"] != nil
+        tools = hidden ? nil : FFmpegLocator.locate(
             override: UserDefaults.standard.string(forKey: Self.ffmpegPathKey),
             directories: [appSupport].compactMap { $0 } + FFmpegLocator.standardDirectories)
         capabilities = nil
@@ -168,6 +170,24 @@ final class AppModel {
         }
         // Videos dropped before FFmpeg was found can be read now.
         for item in items where item.info == nil && !item.isBusy { probe(item) }
+    }
+
+    /// Opens Terminal on a script that installs Homebrew (if missing) and FFmpeg.
+    func installFFmpeg() {
+        let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Web Video Compressor ARO"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Install FFmpeg.command")
+        do {
+            try FFmpegInstaller.script(appName: name).write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        } catch {
+            notice = "The install script could not be written: \(error.localizedDescription)"
+            return
+        }
+        if NSWorkspace.shared.open(url) {
+            notice = "Follow the steps in the Terminal window. This banner disappears once FFmpeg is installed."
+        } else {
+            notice = "Terminal could not be opened. Install Homebrew from brew.sh, then run: brew install ffmpeg"
+        }
     }
 
     func chooseFFmpeg() {

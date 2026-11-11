@@ -278,3 +278,17 @@ private func value(after flag: String, in args: [String]) -> String? {
         }
     }
 }
+
+struct FFmpegInstallerTests {
+    @Test func scriptInstallsHomebrewOnlyWhenMissingThenFFmpeg() {
+        let script = FFmpegInstaller.script(appName: "My App")
+        #expect(script.hasPrefix("#!/bin/bash\n"))
+        #expect(script.contains(FFmpegInstaller.homebrewInstallURL))
+        #expect(script.contains("\"$BREW\" install ffmpeg"))
+        #expect(script.contains("go back to My App"))
+        let brewCheck = script.range(of: "if [ -z \"$BREW\" ]")!.lowerBound
+        let install = script.range(of: "install.sh")!.lowerBound
+        let ffmpeg = script.range(of: "install ffmpeg")!.lowerBound
+        #expect(brewCheck < install && install < ffmpeg)
+    }
+}

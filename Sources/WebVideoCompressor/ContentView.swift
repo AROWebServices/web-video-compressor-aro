@@ -54,14 +54,20 @@ private struct MissingFFmpegBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("FFmpeg was not found").font(.headline)
                 Text(model.notice
-                     ?? "Install it with Homebrew (brew install ffmpeg) or point the app at an ffmpeg binary.")
+                     ?? "The app needs FFmpeg to read and compress videos. Install FFmpeg sets it up with Homebrew, in Terminal.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
+            Button("Install FFmpeg") { model.installFFmpeg() }
+                .buttonStyle(.borderedProminent)
             Button("Check Again") { model.refreshTools() }
             Button("Locate…") { model.chooseFFmpeg() }
+        }
+        // Coming back from Terminal: look again without needing a click.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshTools()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
