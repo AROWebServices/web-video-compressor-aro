@@ -24,9 +24,10 @@ A macOS app that compresses videos for use on websites.
 
 ## Build, test, run
 
-    ./Scripts/test.sh         # unit tests, plus real encodes when FFmpeg is installed
-    ./Scripts/build-app.sh    # creates dist/Web Video Compressor.app
-    open "dist/Web Video Compressor.app"
+    ./Scripts/test.sh                  # unit tests, plus real encodes when FFmpeg is installed
+    ./Scripts/build-app.sh             # creates dist/Web Video Compressor.app
+    ./Scripts/build-app.sh --install   # also copies it to /Applications
+    ./Scripts/make-icon.sh             # only if you change the icon drawing
 
 Build products go to `~/Library/Caches/WebVideoCompressor-build` so the project
 folder stays small (it lives in a synced folder). Override with `WVC_BUILD_DIR`.
@@ -34,6 +35,21 @@ folder stays small (it lives in a synced folder). Override with `WVC_BUILD_DIR`.
 The scripts detect a Command Line Tools-only setup and work around two gaps
 there (see `Scripts/common.sh`). With full Xcode installed you can also open
 `Package.swift` directly.
+
+## Installing on another Mac
+
+The app is signed ad hoc (no Apple Developer account), so the reliable way to
+get it onto another Mac is to build it there:
+
+1. Install the Command Line Tools: `xcode-select --install`
+2. Install Homebrew (https://brew.sh), then `brew install ffmpeg`
+3. Get this folder onto that Mac (it syncs with OneDrive, or copy it)
+4. In the folder, run `./Scripts/build-app.sh --install`
+
+Copying the built `.app` across also works on a Mac with the same processor
+type, but macOS may refuse to open it because it arrived from elsewhere. If so,
+clear the flag once: `xattr -dr com.apple.quarantine "/Applications/Web Video Compressor.app"`.
+FFmpeg still has to be installed on that Mac either way.
 
 ## Where FFmpeg comes from
 
@@ -49,9 +65,20 @@ FFmpeg which encoders it has and only offers the formats that build supports.
 
 To queue videos at launch: `open "dist/Web Video Compressor.app" --args clip.mov`
 
+## Licensing
+
+FFmpeg is not bundled. Homebrew's FFmpeg includes libx264 and libx265, which
+makes that FFmpeg binary GPL. Running it from this app for your own use places
+no obligations on you. If the app is ever given to other people with FFmpeg
+inside it, the GPL's terms apply to that FFmpeg binary (licence text and source
+offer), or FFmpeg must be rebuilt without `--enable-gpl`, which leaves H.264
+and HEVC to the hardware encoder only.
+
 ## Layout
 
 - `Sources/CompressorCore`: all non-UI logic (probe parsing, the pure
   `FFmpegCommandBuilder`, process runner, output naming)
 - `Sources/WebVideoCompressor`: the SwiftUI app
 - `Tests/CompressorCoreTests`: unit tests and FFmpeg integration tests
+- `Scripts`: build, test and icon scripts
+- `Resources`: the app icon
