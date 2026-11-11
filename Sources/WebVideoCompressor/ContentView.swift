@@ -10,31 +10,36 @@ struct ContentView: View {
             if model.tools == nil {
                 MissingFFmpegBanner()
             }
-            Group {
-                if let file = model.file {
-                    FileCard(file: file)
-                } else {
-                    DropZone(isTargeted: isDropTargeted)
+            HStack(spacing: 0) {
+                Group {
+                    if model.items.isEmpty {
+                        DropZone(isTargeted: isDropTargeted).padding(20)
+                    } else {
+                        QueueList()
+                            .overlay {
+                                if isDropTargeted {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                                        .padding(4)
+                                }
+                            }
+                    }
                 }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .dropDestination(for: URL.self) { urls, _ in
+                    model.add(urls)
+                    return !urls.isEmpty
+                } isTargeted: { isDropTargeted = $0 }
 
+                Divider()
+                SettingsPanel()
+                    .frame(width: 310)
+            }
             Divider()
-            SettingsSection()
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-                .disabled(model.isEncoding)
-            Divider()
-            StatusBar()
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
+            BottomBar()
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
         }
-        .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first, !model.isEncoding else { return false }
-            model.load(url)
-            return true
-        } isTargeted: { isDropTargeted = $0 }
     }
 }
 
@@ -48,7 +53,8 @@ private struct MissingFFmpegBanner: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
             VStack(alignment: .leading, spacing: 2) {
                 Text("FFmpeg was not found").font(.headline)
-                Text("Install it with Homebrew (brew install ffmpeg) or point the app at an ffmpeg binary.")
+                Text(model.notice
+                     ?? "Install it with Homebrew (brew install ffmpeg) or point the app at an ffmpeg binary.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -57,8 +63,8 @@ private struct MissingFFmpegBanner: View {
             Button("Check Again") { model.refreshTools() }
             Button("Locate…") { model.chooseFFmpeg() }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(.yellow.opacity(0.12))
     }
 }
@@ -71,24 +77,11 @@ private struct DropZone: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if model.isLoading {
-                ProgressView()
-                Text("Reading video…").foregroundStyle(.secondary)
-            } else {
-                Image(systemName: "film.stack")
-                    .font(.system(size: 44, weight: .light))
-                    .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
-                Text("Drop a video here").font(.title3.weight(.medium))
-                Button("Choose a Video…") { model.chooseFile() }
-                if let error = model.loadError {
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .multilineTextAlignment(.center)
-                        .textSelection(.enabled)
-                        .padding(.top, 4)
-                }
-            }
+            Image(systemName: "film.stack")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(isTargeted ? Color.accentColor : .secondary)
+            Text("Drop videos here").font(.title3.weight(.medium))
+            Button("Add Videos…") { model.chooseFiles() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
@@ -101,203 +94,317 @@ private struct DropZone: View {
     }
 }
 
-// MARK: - Loaded file
+// MARK: - Queue
 
-private struct FileCard: View {
+private struct QueueList: View {
     @Environment(AppModel.self) private var model
-    let file: LoadedFile
 
     var body: some View {
-        VStack(spacing: 14) {
-            Group {
-                if let thumbnail = model.thumbnail {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    Image(systemName: "film")
-                        .font(.system(size: 40, weight: .light))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(.quaternary)
-                }
+        @Bindable var model = model
+        List(selection: $model.selection) {
+            ForEach(model.items) { item in
+                QueueRow(item: item)
+                    .tag(item.id)
+                    .contextMenu {
+                        if item.result != nil {
+                            Button("Reveal in Finder") { model.reveal(item) }
+                        }
+                        if item.isBusy {
+                            Button("Cancel") { model.cancel(item) }
+                        } else if item.info?.video != nil {
+                            Button(item.result == nil ? "Compress" : "Compress Again") { model.start(item) }
+                                .disabled(model.tools == nil)
+                        }
+                        Divider()
+                        Button("Remove from Queue") { model.remove(item) }
+                    }
             }
-            .frame(maxHeight: 190)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .listStyle(.inset)
+    }
+}
 
-            VStack(spacing: 4) {
-                Text(file.url.lastPathComponent)
-                    .font(.headline)
+private struct QueueRow: View {
+    @Environment(AppModel.self) private var model
+    let item: QueueItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            thumbnail
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.url.lastPathComponent)
+                    .font(.body.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(details)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if let error = model.loadError {
-                    Text(error).font(.callout).foregroundStyle(.red)
+                    .lineLimit(1)
+                statusLine
+            }
+            Spacer(minLength: 8)
+            actions
+        }
+        .padding(.vertical, 5)
+    }
+
+    private var thumbnail: some View {
+        Group {
+            if let image = item.thumbnail {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ZStack {
+                    Rectangle().fill(.quaternary)
+                    Image(systemName: "film").foregroundStyle(.secondary)
                 }
             }
-            Button("Choose Another…") { model.chooseFile() }
-                .buttonStyle(.link)
-                .disabled(model.isEncoding)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: 76, height: 48)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
     private var details: String {
-        var parts = [Format.bytes(file.size)]
-        if let video = file.info.video {
-            parts.append("\(video.displayWidth) × \(video.displayHeight)")
+        var parts = [Format.bytes(item.size)]
+        if let info = item.info {
+            if let video = info.video {
+                parts.append("\(video.displayWidth) × \(video.displayHeight)")
+            }
+            if info.duration > 0 { parts.append(Format.duration(info.duration)) }
+            if let video = info.video {
+                parts.append(video.codec.uppercased())
+                if video.isHDR { parts.append("HDR") }
+            }
+            if info.audio == nil { parts.append("no audio") }
         }
-        if file.info.duration > 0 { parts.append(Format.duration(file.info.duration)) }
-        if let codec = file.info.video?.codec { parts.append(codec.uppercased()) }
-        if file.info.audio == nil { parts.append("no audio") }
         return parts.joined(separator: "  ·  ")
     }
-}
 
-// MARK: - Settings
-
-private struct SettingsSection: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        @Bindable var model = model
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 12) {
-            GridRow {
-                Text("Format").gridColumnAlignment(.trailing)
-                Text("MP4 (H.264 + AAC)").foregroundStyle(.secondary)
-            }
-            GridRow {
-                Text("Quality")
-                HStack(spacing: 10) {
-                    Text("Small").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: quality, in: 0...100, step: 5)
-                    Text("High").font(.caption).foregroundStyle(.secondary)
-                    Text(model.settings.qualityLabel)
-                        .monospacedDigit()
-                        .frame(width: 70, alignment: .trailing)
-                }
-            }
-            GridRow {
-                Text("Max size")
-                HStack {
-                    Picker("Max size", selection: $model.settings.maxResolution) {
-                        ForEach(MaxResolution.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    Spacer()
-                    if let size = model.outputSize {
-                        Text("Output \(size.width) × \(size.height)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    private var quality: Binding<Double> {
-        Binding(get: { Double(model.settings.quality) },
-                set: { model.settings.quality = Int($0) })
-    }
-}
-
-// MARK: - Status and actions
-
-private struct StatusBar: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        switch model.status {
-        case .idle:
-            HStack {
-                Text(model.file == nil ? "No video selected" : "Ready")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                compressButton
-            }
+    @ViewBuilder private var statusLine: some View {
+        switch item.status {
+        case .probing:
+            Text("Reading…").font(.callout).foregroundStyle(.secondary)
+        case .ready:
+            Text(plan).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+        case .waiting:
+            Text("Waiting").font(.callout).foregroundStyle(.secondary)
         case .cancelled:
-            HStack {
-                Text("Cancelled. Nothing was saved.").foregroundStyle(.secondary)
-                Spacer()
-                compressButton
-            }
+            Text("Cancelled. Nothing was saved.").font(.callout).foregroundStyle(.secondary)
         case .encoding(let fraction):
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: fraction)
-                    Text(progressText(fraction))
-                        .font(.callout)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                Button("Cancel", role: .cancel) { model.cancel() }
-                    .keyboardShortcut(.cancelAction)
+            VStack(alignment: .leading, spacing: 2) {
+                ProgressView(value: fraction)
+                Text(progressText(fraction))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
             }
         case .done(let result):
-            HStack(spacing: 12) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(resultHeadline(result)).font(.headline)
-                    Text(result.outputURL.lastPathComponent)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-                Button("Reveal in Finder") { model.revealResult() }
-                compressButton
-            }
-        case .failed(let summary, let fullLog):
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Compression failed").font(.headline)
-                    Text(summary)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(5)
-                        .textSelection(.enabled)
-                }
-                Spacer()
-                if !fullLog.isEmpty {
-                    Button("Copy Full Log") { model.copyToClipboard(fullLog) }
-                }
-                compressButton
-            }
+            let larger = result.outputSize > item.size && item.size > 0
+            Label(resultText(result), systemImage: larger ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.callout)
+                .foregroundStyle(larger ? .orange : .green)
+                .lineLimit(1)
+                .help(result.outputURL.path)
+        case .failed(let summary, _):
+            Text(summary)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.red)
+                .lineLimit(3)
+                .textSelection(.enabled)
+        case .unreadable(let message):
+            Text(message).font(.callout).foregroundStyle(.red).lineLimit(2)
         }
     }
 
-    private var compressButton: some View {
-        Button("Compress") { model.compress() }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!model.canCompress)
+    /// What will happen to this video with the current settings.
+    private var plan: String {
+        let settings = model.settings(for: item)
+        var parts = [settings.format.label]
+        if let size = model.outputSize(for: item) { parts.append("\(size.width) × \(size.height)") }
+        if item.override != nil { parts.append("own settings") }
+        if item.info?.video?.isHDR == true {
+            parts.append(model.capabilities?.hdrConversion == .unavailable
+                         ? "HDR cannot be converted; colours may look washed out"
+                         : "HDR will be converted to SDR")
+        }
+        return "→ " + parts.joined(separator: "  ·  ")
     }
 
     private func progressText(_ fraction: Double) -> String {
         var text = "\(Int((fraction * 100).rounded()))%"
-        if let remaining = model.secondsRemaining, remaining.isFinite {
+        if let remaining = item.secondsRemaining, remaining.isFinite {
             text += "  ·  about \(Format.duration(max(1, remaining))) left"
         }
         return text
     }
 
-    private func resultHeadline(_ result: CompressionResult) -> String {
+    private func resultText(_ result: CompressionResult) -> String {
+        let name = result.outputURL.lastPathComponent
         let size = Format.bytes(result.outputSize)
-        guard let original = model.file?.size, original > 0 else { return size }
-        let change = Double(original - result.outputSize) / Double(original) * 100
-        if change >= 0 {
-            return "\(size)  ·  \(Int(change.rounded()))% smaller"
+        guard item.size > 0 else { return "\(size)  ·  \(name)" }
+        let change = Double(item.size - result.outputSize) / Double(item.size) * 100
+        let verdict = change >= 0
+            ? "\(Int(change.rounded()))% smaller"
+            : "\(Int((-change).rounded()))% larger than the original"
+        return "\(size)  ·  \(verdict)  ·  \(name)"
+    }
+
+    @ViewBuilder private var actions: some View {
+        HStack(spacing: 6) {
+            if case .failed(_, let fullLog) = item.status, !fullLog.isEmpty {
+                iconButton("doc.on.doc", "Copy the full FFmpeg log") { model.copyToClipboard(fullLog) }
+            }
+            if item.result != nil {
+                iconButton("magnifyingglass", "Reveal in Finder") { model.reveal(item) }
+            }
+            if item.isBusy {
+                iconButton("xmark.circle", "Cancel") { model.cancel(item) }
+            } else {
+                iconButton("trash", "Remove from queue") { model.remove(item) }
+            }
         }
-        return "\(size)  ·  \(Int((-change).rounded()))% larger than the original"
+    }
+
+    private func iconButton(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol) }
+            .buttonStyle(.borderless)
+            .help(help)
+            .accessibilityLabel(help)
+    }
+}
+
+// MARK: - Settings
+
+private struct SettingsPanel: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        let settings = model.editedSettings
+        Form {
+            Section {
+                if let item = model.selectedItem {
+                    Toggle("Own settings for this video", isOn: Binding(
+                        get: { item.override != nil },
+                        set: { model.setOverride($0, for: item) }))
+                    Text(item.override != nil
+                         ? "Editing \(item.url.lastPathComponent) only."
+                         : "Editing the settings for all videos.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text("These settings apply to all videos. Select one to give it its own.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Picker("Preset", selection: Binding(
+                    get: { settings.preset },
+                    set: { model.editedSettings.apply($0) })) {
+                    ForEach(Preset.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("Format", selection: $model.editedSettings.format) {
+                    ForEach(model.availableFormats) { Text($0.label).tag($0) }
+                }
+                Text(settings.format.note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if model.hardwareAvailable(for: settings.format) {
+                    Toggle("Fast (hardware) encoding", isOn: $model.editedSettings.useHardware)
+                    if settings.useHardware {
+                        Text("Much faster, but files are larger at the same quality.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
+                if settings.format.hasQualitySetting {
+                    LabeledContent("Quality") {
+                        Text(settings.qualityLabel).foregroundStyle(.secondary)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(settings.quality) },
+                        set: { model.editedSettings.quality = Int($0) }), in: 0...100, step: 5) {
+                        Text("Quality")
+                    } minimumValueLabel: {
+                        Text("Small").font(.caption)
+                    } maximumValueLabel: {
+                        Text("High").font(.caption)
+                    }
+                    .labelsHidden()
+                }
+                Picker("Max size", selection: $model.editedSettings.maxResolution) {
+                    ForEach(MaxResolution.allCases) { Text($0.label).tag($0) }
+                }
+                if settings.format == .gif {
+                    LabeledContent("Frame rate") { Text("15 fps").foregroundStyle(.secondary) }
+                } else {
+                    Picker("Frame rate", selection: $model.editedSettings.frameRateCap) {
+                        ForEach(FrameRateCap.allCases) { Text($0.label).tag($0) }
+                    }
+                }
+                if settings.format.hasAudio {
+                    Picker("Audio", selection: $model.editedSettings.audio) {
+                        ForEach(AudioMode.allCases) { Text($0.label).tag($0) }
+                    }
+                } else {
+                    LabeledContent("Audio") { Text("None").foregroundStyle(.secondary) }
+                }
+                Toggle("Strip metadata", isOn: $model.editedSettings.stripMetadata)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Bottom bar
+
+private struct BottomBar: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Menu {
+                Button("Same Folder as Each Video") { model.outputFolder = nil }
+                Button("Choose Folder…") { model.chooseOutputFolder() }
+            } label: {
+                Label(model.outputFolder?.lastPathComponent ?? "Same folder as source",
+                      systemImage: "folder")
+            }
+            .fixedSize()
+            .help(model.outputFolder?.path ?? "Each result is saved next to its source with “-web” added to the name.")
+
+            Text(summary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+
+            Button("Add…") { model.chooseFiles() }
+            if model.isRunning {
+                Button("Cancel All", role: .cancel) { model.cancelAll() }
+            }
+            Button("Compress All") { model.startAll() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!model.canStart)
+        }
+    }
+
+    private var summary: String {
+        let count = model.items.count
+        guard count > 0 else { return "" }
+        var text = count == 1 ? "1 video" : "\(count) videos"
+        if let savings = model.savings {
+            text += "  ·  \(Format.bytes(savings.original)) → \(Format.bytes(savings.compressed))"
+        }
+        return text
     }
 }
 

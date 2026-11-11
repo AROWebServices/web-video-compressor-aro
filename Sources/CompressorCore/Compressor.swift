@@ -36,16 +36,29 @@ public struct Compressor: Sendable {
         }
     }
 
+    /// Asks the installed FFmpeg which encoders and colour conversions it has.
+    public func capabilities() async throws -> FFmpegCapabilities {
+        func text(_ arguments: [String]) async throws -> String {
+            let output = try await ProcessRunner.run(tools.ffmpeg, ["-hide_banner"] + arguments)
+            return String(decoding: output.stdout, as: UTF8.self)
+        }
+        return FFmpegCapabilities.parse(encodersOutput: try await text(["-encoders"]),
+                                        filtersOutput: try await text(["-filters"]),
+                                        scaleHelp: try await text(["-h", "filter=scale"]))
+    }
+
     /// Encodes `input` to `output`. `output` must not exist yet; on failure or
     /// cancellation any partial file is removed.
     public func compress(
         input: URL, output: URL, info: MediaInfo, settings: EncodeSettings,
+        capabilities: FFmpegCapabilities,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> CompressionResult {
         let arguments: [String]
         do {
             arguments = try FFmpegCommandBuilder.arguments(input: input, output: output,
-                                                           info: info, settings: settings)
+                                                           info: info, settings: settings,
+                                                           capabilities: capabilities)
         } catch {
             throw CompressorError.noVideoStream
         }

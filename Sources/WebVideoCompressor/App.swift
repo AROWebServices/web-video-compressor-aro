@@ -15,27 +15,33 @@ struct WebVideoCompressorApp: App {
         Window("Web Video Compressor", id: "main") {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 520, idealWidth: 560, minHeight: 500)
+                .frame(minWidth: 820, idealWidth: 900, minHeight: 540, idealHeight: 600)
                 .onAppear { NSApplication.shared.activate(ignoringOtherApps: true) }
         }
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Open Video…") { model.chooseFile() }
+                Button("Add Videos…") { model.chooseFiles() }
                     .keyboardShortcut("o")
-                    .disabled(model.isEncoding)
             }
-            CommandMenu("Video") {
-                Button("Compress") { model.compress() }
+            CommandMenu("Queue") {
+                Button("Compress All") { model.startAll() }
                     .keyboardShortcut(.return)
-                    .disabled(!model.canCompress)
-                Button("Cancel") { model.cancel() }
+                    .disabled(!model.canStart)
+                Button("Cancel All") { model.cancelAll() }
                     .keyboardShortcut(".")
-                    .disabled(!model.isEncoding)
+                    .disabled(!model.isRunning)
                 Divider()
-                Button("Reveal Result in Finder") { model.revealResult() }
+                Button("Remove Selected Video") { model.removeSelected() }
+                    .keyboardShortcut(.delete)
+                    .disabled(model.selectedItem == nil)
+                Button("Clear Finished") { model.clearFinished() }
+                    .keyboardShortcut("k")
+                    .disabled(model.savings == nil)
+                Divider()
+                Button("Reveal Results in Finder") { model.revealAll() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
-                    .disabled(model.resultURL == nil)
+                    .disabled(model.savings == nil)
                 Divider()
                 Button("Locate FFmpeg…") { model.chooseFFmpeg() }
             }

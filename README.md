@@ -1,8 +1,16 @@
 # Web Video Compressor
 
-A macOS app that compresses videos for use on websites. Phase 1 (MVP): one file
-at a time, MP4 (H.264 + AAC), quality slider, maximum resolution, progress, and
-the resulting size.
+A macOS app that compresses videos for use on websites.
+
+- Drop in one or many videos and compress them as a batch
+- Output: MP4 (H.264, HEVC or AV1), WebM (VP9 or AV1), or animated GIF
+- Presets (hero background, standard, small/mobile) plus quality, maximum size,
+  frame rate cap, audio handling and metadata stripping
+- Optional fast hardware encoding for H.264 and HEVC
+- HDR sources (iPhone HLG, HDR10) are converted to SDR; variable frame rate is
+  made constant; output is always 8-bit 4:2:0 with faststart for MP4
+- Settings apply to the whole batch, or select a video to give it its own
+- Originals are never overwritten: results get a `-web` suffix
 
 ## Requirements
 
@@ -32,7 +40,10 @@ It looks for both programs, side by side, in this order:
 2. `~/Library/Application Support/WebVideoCompressor/bin`
 3. `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`
 
-The simplest install is Homebrew: `brew install ffmpeg`. The build needs libx264.
+The simplest install is Homebrew: `brew install ffmpeg`. At launch the app asks
+FFmpeg which encoders it has and only offers the formats that build supports.
+
+To queue videos at launch: `open "dist/Web Video Compressor.app" --args clip.mov`
 
 ## Layout
 

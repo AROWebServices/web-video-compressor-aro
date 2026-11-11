@@ -25,19 +25,39 @@ public struct VideoStream: Sendable, Equatable {
     public var height: Int
     /// Rotation in degrees from the display matrix or the legacy `rotate` tag.
     public var rotation: Int
+    /// Average frame rate.
     public var frameRate: Double?
+    /// The container's base frame rate; differs from the average for variable frame rate video.
+    public var baseFrameRate: Double?
     public var pixelFormat: String?
     public var colorTransfer: String?
+    /// Four-character sample entry, e.g. "hvc1" or "avc1".
+    public var codecTag: String?
 
     public init(codec: String, width: Int, height: Int, rotation: Int = 0, frameRate: Double? = nil,
-                pixelFormat: String? = nil, colorTransfer: String? = nil) {
+                baseFrameRate: Double? = nil, pixelFormat: String? = nil, colorTransfer: String? = nil,
+                codecTag: String? = nil) {
         self.codec = codec
         self.width = width
         self.height = height
         self.rotation = rotation
         self.frameRate = frameRate
+        self.baseFrameRate = baseFrameRate
         self.pixelFormat = pixelFormat
         self.colorTransfer = colorTransfer
+        self.codecTag = codecTag
+    }
+
+    /// PQ (HDR10, Dolby Vision) or HLG (iPhone HDR). These look washed out in
+    /// browsers unless converted to standard dynamic range.
+    public var isHDR: Bool {
+        colorTransfer == "smpte2084" || colorTransfer == "arib-std-b67"
+    }
+
+    /// Screen recordings and phone footage often have an uneven frame rate.
+    public var isVariableFrameRate: Bool {
+        guard let frameRate, let baseFrameRate, frameRate > 0 else { return false }
+        return abs(baseFrameRate - frameRate) / frameRate > 0.02
     }
 
     private var isSideways: Bool { abs(rotation) % 180 == 90 }
@@ -86,8 +106,10 @@ extension MediaInfo {
                 width: Int(w), height: Int(h),
                 rotation: Int((matrixRotation ?? tagRotation ?? 0).rounded()),
                 frameRate: parseRate(s.avg_frame_rate) ?? parseRate(s.r_frame_rate),
+                baseFrameRate: parseRate(s.r_frame_rate),
                 pixelFormat: s.pix_fmt,
-                colorTransfer: s.color_transfer)
+                colorTransfer: s.color_transfer,
+                codecTag: s.codec_tag_string)
         }
         let audio: AudioStream? = rawAudio.map { s in
             AudioStream(codec: s.codec_name ?? "unknown",
@@ -161,6 +183,7 @@ private struct RawStream: Decodable {
     var avg_frame_rate: String?
     var pix_fmt: String?
     var color_transfer: String?
+    var codec_tag_string: String?
     var channels: FlexibleNumber?
     var bit_rate: FlexibleNumber?
     var duration: FlexibleNumber?
@@ -170,7 +193,7 @@ private struct RawStream: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case codec_type, codec_name, width, height, r_frame_rate, avg_frame_rate, pix_fmt
-        case color_transfer, channels, bit_rate, duration, tags, side_data_list, disposition
+        case color_transfer, codec_tag_string, channels, bit_rate, duration, tags, side_data_list, disposition
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -182,6 +205,7 @@ private struct RawStream: Decodable {
         avg_frame_rate = try? c.decode(String.self, forKey: .avg_frame_rate)
         pix_fmt = try? c.decode(String.self, forKey: .pix_fmt)
         color_transfer = try? c.decode(String.self, forKey: .color_transfer)
+        codec_tag_string = try? c.decode(String.self, forKey: .codec_tag_string)
         channels = try? c.decode(FlexibleNumber.self, forKey: .channels)
         bit_rate = try? c.decode(FlexibleNumber.self, forKey: .bit_rate)
         duration = try? c.decode(FlexibleNumber.self, forKey: .duration)

@@ -5,10 +5,22 @@ import Testing
 private let input = URL(fileURLWithPath: "/videos/My Clip.mov")
 private let output = URL(fileURLWithPath: "/videos/My Clip-web.mp4")
 
-private func info(width: Int = 1920, height: Int = 1080, rotation: Int = 0, audio: Bool = true) -> MediaInfo {
+private let allEncoders: Set<String> = ["libx264", "libx265", "libvpx-vp9", "libsvtav1", "gif", "aac", "libopus",
+                                        "h264_videotoolbox", "hevc_videotoolbox"]
+private let caps = FFmpegCapabilities(encoders: allEncoders, hdrConversion: .scaleFilter)
+
+private func info(width: Int = 1920, height: Int = 1080, rotation: Int = 0, audio: Bool = true,
+                  frameRate: Double? = 30, baseFrameRate: Double? = 30, transfer: String? = nil) -> MediaInfo {
     MediaInfo(duration: 10,
-              video: VideoStream(codec: "h264", width: width, height: height, rotation: rotation),
+              video: VideoStream(codec: "h264", width: width, height: height, rotation: rotation,
+                                 frameRate: frameRate, baseFrameRate: baseFrameRate, colorTransfer: transfer),
               audio: audio ? AudioStream(codec: "aac", channels: 2) : nil)
+}
+
+private func build(_ settings: EncodeSettings = EncodeSettings(), info source: MediaInfo = info(),
+                   capabilities: FFmpegCapabilities = caps) throws -> [String] {
+    try FFmpegCommandBuilder.arguments(input: input, output: output, info: source, settings: settings,
+                                       capabilities: capabilities)
 }
 
 private func value(after flag: String, in args: [String]) -> String? {
@@ -18,8 +30,7 @@ private func value(after flag: String, in args: [String]) -> String? {
 
 @Suite struct CommandBuilderTests {
     @Test func h264DefaultsAreWebSafe() throws {
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output, info: info(),
-                                                      settings: EncodeSettings())
+        let args = try build(EncodeSettings())
         #expect(value(after: "-c:v", in: args) == "libx264")
         #expect(value(after: "-pix_fmt", in: args) == "yuv420p")
         #expect(value(after: "-movflags", in: args) == "+faststart")
@@ -32,33 +43,27 @@ private func value(after flag: String, in args: [String]) -> String? {
     }
 
     @Test func pathsWithSpacesStaySingleArguments() throws {
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output, info: info(),
-                                                      settings: EncodeSettings())
+        let args = try build(EncodeSettings())
         #expect(args.contains("/videos/My Clip.mov"))
     }
 
     @Test func noScaleFilterWhenAlreadyWithinLimit() throws {
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output, info: info(),
-                                                      settings: EncodeSettings(maxResolution: .p1080))
+        let args = try build(EncodeSettings(maxResolution: .p1080))
         #expect(!args.contains("-vf"))
     }
 
     @Test func downscalesTo720p() throws {
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output, info: info(),
-                                                      settings: EncodeSettings(maxResolution: .p720))
+        let args = try build(EncodeSettings(maxResolution: .p720))
         #expect(value(after: "-vf", in: args) == "scale=1280:720:flags=lanczos")
     }
 
     @Test func oddDimensionsAreMadeEvenEvenAtOriginalSize() throws {
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output,
-                                                      info: info(width: 853, height: 479),
-                                                      settings: EncodeSettings(maxResolution: .original))
+        let args = try build(EncodeSettings(maxResolution: .original), info: info(width: 853, height: 479))
         #expect(value(after: "-vf", in: args) == "scale=854:480:flags=lanczos")
     }
 
     @Test func noAudioTrackMeansNoAudioMapping() throws {
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output, info: info(audio: false),
-                                                      settings: EncodeSettings())
+        let args = try build(EncodeSettings(), info: info(audio: false))
         #expect(args.contains("-an"))
         #expect(!args.contains("-c:a"))
         #expect(!args.contains("0:a:0"))
@@ -67,17 +72,22 @@ private func value(after flag: String, in args: [String]) -> String? {
     @Test func missingVideoStreamThrows() {
         let audioOnly = MediaInfo(duration: 5, audio: AudioStream(codec: "mp3"))
         #expect(throws: CommandBuilderError.noVideoStream) {
-            try FFmpegCommandBuilder.arguments(input: input, output: output, info: audioOnly,
-                                               settings: EncodeSettings())
+            try build(EncodeSettings(), info: audioOnly)
         }
     }
 
-    @Test func qualityMapsToCRF() {
-        #expect(FFmpegCommandBuilder.crf(forQuality: 0) == 30)
-        #expect(FFmpegCommandBuilder.crf(forQuality: 50) == 24)
-        #expect(FFmpegCommandBuilder.crf(forQuality: 100) == 18)
-        #expect(FFmpegCommandBuilder.crf(forQuality: 500) == 18)
-        #expect(FFmpegCommandBuilder.crf(forQuality: -5) == 30)
+    @Test func qualityMapsToEachEncodersScale() {
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 0, encoder: "libx264") == 30)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 50, encoder: "libx264") == 24)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 100, encoder: "libx264") == 18)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 500, encoder: "libx264") == 18)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: -5, encoder: "libx264") == 30)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 50, encoder: "libx265") == 28)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 50, encoder: "libvpx-vp9") == 33)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 50, encoder: "libsvtav1") == 36)
+        // VideoToolbox runs the other way: higher is better.
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 0, encoder: "h264_videotoolbox") == 35)
+        #expect(FFmpegCommandBuilder.qualityValue(forQuality: 100, encoder: "hevc_videotoolbox") == 75)
     }
 
     @Test func qualityLabels() {
@@ -115,8 +125,7 @@ private func value(after flag: String, in args: [String]) -> String? {
         let rotated = info(width: 1920, height: 1080, rotation: -90)
         #expect(rotated.video?.displayWidth == 1080)
         #expect(rotated.video?.displayHeight == 1920)
-        let args = try FFmpegCommandBuilder.arguments(input: input, output: output, info: rotated,
-                                                      settings: EncodeSettings(maxResolution: .p720))
+        let args = try build(EncodeSettings(maxResolution: .p720), info: rotated)
         #expect(value(after: "-vf", in: args) == "scale=720:1280:flags=lanczos")
     }
 }
