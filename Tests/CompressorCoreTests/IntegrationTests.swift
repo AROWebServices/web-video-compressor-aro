@@ -23,10 +23,13 @@ struct IntegrationTests {
     }
 
     /// Generates a short synthetic clip with FFmpeg's built-in test sources.
-    private func makeSource(name: String, size: String, seconds: Int = 2, audio: Bool = true) async throws -> URL {
+    /// `crop` trims the picture afterwards; the test source itself only produces even sizes.
+    private func makeSource(name: String, size: String, crop: String? = nil, seconds: Int = 2,
+                            audio: Bool = true) async throws -> URL {
         let url = folder.appendingPathComponent(name)
         var args = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=\(size):rate=30:duration=\(seconds)"]
         if audio { args += ["-f", "lavfi", "-i", "sine=frequency=440:duration=\(seconds)"] }
+        if let crop { args += ["-vf", "format=yuv444p,crop=\(crop):exact=1"] }
         args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv444p"]
         if audio { args += ["-c:a", "aac"] }
         args.append(url.path)
@@ -66,8 +69,10 @@ struct IntegrationTests {
     @Test func handlesOddDimensionsAndNoAudio() async throws {
         defer { try? FileManager.default.removeItem(at: folder) }
         let compressor = Compressor(tools: tools)
-        let source = try await makeSource(name: "odd.mkv", size: "321x241", audio: false)
+        let source = try await makeSource(name: "odd.mkv", size: "322x242", crop: "321:241", audio: false)
         let info = try await compressor.probe(source)
+        #expect(info.video?.width == 321)
+        #expect(info.video?.height == 241)
         #expect(info.audio == nil)
 
         let output = OutputNaming.uniqueURL(for: source, fileExtension: "mp4")
