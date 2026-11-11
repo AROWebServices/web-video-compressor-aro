@@ -5,3 +5,4 @@ Vendor/
 .DS_Store
 *.xcodeproj
 xcuserdata/
+Installer/

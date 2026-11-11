@@ -46,10 +46,14 @@ get it onto another Mac is to build it there:
 3. Get this folder onto that Mac (it syncs with OneDrive, or copy it)
 4. In the folder, run `./Scripts/build-app.sh --install`
 
-Copying the built `.app` across also works on a Mac with the same processor
-type, but macOS may refuse to open it because it arrived from elsewhere. If so,
-clear the flag once: `xattr -dr com.apple.quarantine "/Applications/Web Video Compressor.app"`.
-FFmpeg still has to be installed on that Mac either way.
+Or make a disk image and carry that across (Apple Silicon Macs only):
+
+1. Here, run `./Scripts/make-dmg.sh`. It writes `dist/Web Video Compressor <version>.dmg`.
+2. On the other Mac, open the `.dmg` and drag the app onto Applications.
+3. Install Homebrew (https://brew.sh), then `brew install ffmpeg`.
+4. If macOS refuses to open the app because it arrived from elsewhere, use
+   System Settings → Privacy & Security → Open Anyway, or clear the flag once:
+   `xattr -dr com.apple.quarantine "/Applications/Web Video Compressor.app"`.
 
 ## Where FFmpeg comes from
 
