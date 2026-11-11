@@ -44,6 +44,9 @@ public struct FFmpegCapabilities: Sendable, Equatable {
     }
 
     public func supports(_ format: OutputFormat) -> Bool {
+        if format == .webBundle {
+            return format.components.allSatisfy(supports) && encoders.contains("mjpeg")
+        }
         guard encoders.contains(format.softwareEncoder) else { return false }
         if let audio = format.audioEncoder { return encoders.contains(audio) }
         return true
@@ -119,70 +122,155 @@ public enum FFmpegCommandBuilder {
         rate == rate.rounded() ? String(Int(rate)) : String(format: "%.3f", rate)
     }
 
+    // MARK: Target size
+
+    /// Encoders that can do a first analysis pass, which makes hitting a size
+    /// target much more accurate.
+    public static let twoPassEncoders: Set<String> = ["libx264", "libx265", "libvpx-vp9"]
+
+    public static func audioBitrateKbps(format: OutputFormat, mode: AudioMode) -> Int {
+        switch (format.audioEncoder, mode) {
+        case (nil, _), (_, .remove): 0
+        case ("libopus", .low): 48
+        case ("libopus", _): 96
+        case (_, .low): 64
+        default: 128
+        }
+    }
+
+    /// Video bitrate that makes the whole file land on the target size.
+    /// 3% is held back for container overhead; the floor keeps the picture
+    /// from collapsing entirely when the target is unrealistically small.
+    public static func videoBitrateKbps(targetMB: Double, duration: Double, audioKbps: Int) -> Int {
+        guard duration > 0 else { return 1000 }
+        let totalKbps = targetMB * 8000 * 0.97 / duration
+        return Swift.max(50, Int(totalKbps) - audioKbps)
+    }
+
+    // MARK: Filters
+
+    /// Resize and HDR-to-SDR filters. `alwaysScale` forces an explicit size
+    /// even when the source already fits (used for the poster image).
+    static func sizeAndColourFilters(video: VideoStream, settings: EncodeSettings,
+                                     capabilities: FFmpegCapabilities, alwaysScale: Bool = false) -> [String] {
+        let target = outputSize(displayWidth: video.displayWidth, displayHeight: video.displayHeight,
+                                max: settings.maxResolution)
+        let needsResize = alwaysScale
+            || target.width != video.displayWidth || target.height != video.displayHeight
+        let convertHDR = video.isHDR && capabilities.hdrConversion != .unavailable
+        let size = "\(target.width):\(target.height):flags=lanczos"
+        if convertHDR && capabilities.hdrConversion == .scaleFilter {
+            return ["scale=\(size):out_transfer=bt709:out_primaries=bt709:out_color_matrix=bt709"]
+        }
+        var filters: [String] = []
+        if needsResize { filters.append("scale=\(size)") }
+        if convertHDR {
+            filters += [
+                "zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709",
+                "tonemap=tonemap=hable:desat=0", "zscale=t=bt709:m=bt709:r=tv",
+            ]
+        }
+        return filters
+    }
+
+    private static func seconds(_ value: Double) -> String {
+        String(format: "%.3f", value)
+    }
+
     // MARK: Arguments
 
+    /// One pass of a two-pass encode.
+    public struct Pass: Sendable, Equatable {
+        public var number: Int          // 1 = analysis, 2 = final
+        public var logBase: URL         // where the encoder keeps its statistics
+        public init(number: Int, logBase: URL) {
+            self.number = number
+            self.logBase = logBase
+        }
+    }
+
+    /// The FFmpeg runs needed for one output file: one normally, two when a
+    /// size target is set and the encoder supports an analysis pass.
+    public static func passes(input: URL, output: URL, info: MediaInfo, settings: EncodeSettings,
+                              trim: TrimRange? = nil, capabilities: FFmpegCapabilities,
+                              passLogBase: URL) throws -> [[String]] {
+        let encoder = settings.usesHardwareEncoder ? settings.format.hardwareEncoder! : settings.format.softwareEncoder
+        guard settings.effectiveTargetSizeMB != nil, twoPassEncoders.contains(encoder) else {
+            return [try arguments(input: input, output: output, info: info, settings: settings,
+                                  trim: trim, capabilities: capabilities)]
+        }
+        return try [1, 2].map { number in
+            try arguments(input: input, output: output, info: info, settings: settings, trim: trim,
+                          capabilities: capabilities, pass: Pass(number: number, logBase: passLogBase))
+        }
+    }
+
     public static func arguments(input: URL, output: URL, info: MediaInfo, settings: EncodeSettings,
-                                 capabilities: FFmpegCapabilities) throws -> [String] {
+                                 trim: TrimRange? = nil, capabilities: FFmpegCapabilities,
+                                 pass: Pass? = nil) throws -> [String] {
         guard let video = info.video else { throw CommandBuilderError.noVideoStream }
         let format = settings.format
+        let analysisOnly = pass?.number == 1
         let keepAudio = info.audio != nil && format.hasAudio && settings.audio != .remove
+        let kept = trim?.resolved(duration: info.duration)
+        let duration = kept?.length ?? info.duration
 
         var args = [
             "-hide_banner", "-nostdin",
             "-n",                       // never overwrite an existing file
             "-v", "error",
             "-progress", "pipe:1", "-nostats",
-            "-i", input.path,
-            "-map", "0:v:0",
         ]
-        if keepAudio { args += ["-map", "0:a:0"] }
+        // Seeking before -i is fast, and still frame-accurate because we re-encode.
+        if let kept, kept.start > 0 { args += ["-ss", seconds(kept.start)] }
+        args += ["-i", input.path]
+        if let kept { args += ["-t", seconds(kept.length)] }
+        args += ["-map", "0:v:0"]
+        if keepAudio && !analysisOnly { args += ["-map", "0:a:0"] }
 
         // Video filters, in order: frame rate, size and colour, GIF palette.
         var filters: [String] = []
         if let rate = outputFrameRate(video: video, settings: settings) {
             filters.append("fps=\(Self.format(rate: rate))")
         }
-
-        let target = outputSize(displayWidth: video.displayWidth, displayHeight: video.displayHeight,
-                                max: settings.maxResolution)
-        let needsResize = target.width != video.displayWidth || target.height != video.displayHeight
+        filters += sizeAndColourFilters(video: video, settings: settings, capabilities: capabilities)
         let convertHDR = video.isHDR && capabilities.hdrConversion != .unavailable
-        let size = "\(target.width):\(target.height):flags=lanczos"
-        if convertHDR && capabilities.hdrConversion == .scaleFilter {
-            filters.append("scale=\(size):out_transfer=bt709:out_primaries=bt709:out_color_matrix=bt709")
-        } else {
-            if needsResize { filters.append("scale=\(size)") }
-            if convertHDR {
-                filters += [
-                    "zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709",
-                    "tonemap=tonemap=hable:desat=0", "zscale=t=bt709:m=bt709:r=tv",
-                ]
-            }
-        }
         if format == .gif {
             filters.append("split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5")
         }
         if !filters.isEmpty { args += ["-vf", filters.joined(separator: ",")] }
 
-        // Video encoder.
+        // Video encoder: by quality, or by bitrate when aiming for a file size.
         let encoder = settings.usesHardwareEncoder ? format.hardwareEncoder! : format.softwareEncoder
         let quality = String(qualityValue(forQuality: settings.quality, encoder: encoder))
+        let bitrate: String? = settings.effectiveTargetSizeMB.map { target in
+            let audio = keepAudio ? audioBitrateKbps(format: format, mode: settings.audio) : 0
+            return "\(videoBitrateKbps(targetMB: target, duration: duration, audioKbps: audio))k"
+        }
+        let rateControl = bitrate.map { ["-b:v", $0] }
+        var passFlags: [String] = []
+        if let pass, encoder != "libx265" {
+            passFlags = ["-pass", String(pass.number), "-passlogfile", pass.logBase.path]
+        }
         switch encoder {
         case "libx264":
-            args += ["-c:v", "libx264", "-preset", "medium", "-crf", quality, "-profile:v", "high"]
+            args += ["-c:v", "libx264", "-preset", "medium"] + (rateControl ?? ["-crf", quality])
+                + ["-profile:v", "high"] + passFlags
         case "libx265":
-            args += ["-c:v", "libx265", "-preset", "medium", "-crf", quality,
-                     "-x265-params", "log-level=error", "-tag:v", "hvc1"]
+            var params = "log-level=error"
+            if let pass { params += ":pass=\(pass.number):stats=\(pass.logBase.path)" }
+            args += ["-c:v", "libx265", "-preset", "medium"] + (rateControl ?? ["-crf", quality])
+                + ["-x265-params", params, "-tag:v", "hvc1"]
         case "libvpx-vp9":
-            // -b:v 0 switches VP9 to pure constant-quality mode.
-            args += ["-c:v", "libvpx-vp9", "-crf", quality, "-b:v", "0",
-                     "-row-mt", "1", "-deadline", "good", "-cpu-used", "2"]
+            // In quality mode, -b:v 0 switches VP9 to pure constant quality.
+            args += ["-c:v", "libvpx-vp9"] + (rateControl ?? ["-crf", quality, "-b:v", "0"])
+                + ["-row-mt", "1", "-deadline", "good", "-cpu-used", "2"] + passFlags
         case "libsvtav1":
-            args += ["-c:v", "libsvtav1", "-crf", quality, "-preset", "8"]
+            args += ["-c:v", "libsvtav1"] + (rateControl ?? ["-crf", quality]) + ["-preset", "8"]
         case "h264_videotoolbox":
-            args += ["-c:v", "h264_videotoolbox", "-q:v", quality, "-profile:v", "high"]
+            args += ["-c:v", "h264_videotoolbox"] + (rateControl ?? ["-q:v", quality]) + ["-profile:v", "high"]
         case "hevc_videotoolbox":
-            args += ["-c:v", "hevc_videotoolbox", "-q:v", quality, "-tag:v", "hvc1"]
+            args += ["-c:v", "hevc_videotoolbox"] + (rateControl ?? ["-q:v", quality]) + ["-tag:v", "hvc1"]
         default: // gif
             args += ["-c:v", "gif", "-loop", "0"]
         }
@@ -193,16 +281,15 @@ public enum FFmpegCommandBuilder {
             }
         }
 
+        // The analysis pass only gathers statistics; nothing is written.
+        if analysisOnly {
+            return args + ["-an", "-sn", "-dn", "-f", "null", "-"]
+        }
+
         // Audio.
         if keepAudio, let audioEncoder = format.audioEncoder {
-            let bitrate: String
-            switch (audioEncoder, settings.audio) {
-            case ("libopus", .low): bitrate = "48k"
-            case ("libopus", _): bitrate = "96k"
-            case (_, .low): bitrate = "64k"
-            default: bitrate = "128k"
-            }
-            args += ["-c:a", audioEncoder, "-b:a", bitrate, "-ac", "2"]
+            let kbps = audioBitrateKbps(format: format, mode: settings.audio)
+            args += ["-c:a", audioEncoder, "-b:a", "\(kbps)k", "-ac", "2"]
         } else {
             args += ["-an"]
         }
@@ -215,6 +302,27 @@ public enum FFmpegCommandBuilder {
             args += ["-movflags", "+faststart"] // playback can start before the download finishes
         }
         args.append(output.path)
+        return args
+    }
+
+    /// A single JPEG still of the first frame that will be shown, at the same
+    /// size as the video, so the page does not jump when playback starts.
+    public static func posterArguments(input: URL, output: URL, info: MediaInfo, settings: EncodeSettings,
+                                       trim: TrimRange? = nil,
+                                       capabilities: FFmpegCapabilities) throws -> [String] {
+        guard let video = info.video else { throw CommandBuilderError.noVideoStream }
+        var args = ["-hide_banner", "-nostdin", "-n", "-v", "error"]
+        if let kept = trim?.resolved(duration: info.duration), kept.start > 0 {
+            args += ["-ss", seconds(kept.start)]
+        }
+        let filters = sizeAndColourFilters(video: video, settings: settings, capabilities: capabilities,
+                                           alwaysScale: true)
+        args += [
+            "-i", input.path, "-map", "0:v:0", "-frames:v", "1",
+            "-vf", filters.joined(separator: ","),
+            "-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p",
+            "-update", "1", output.path,
+        ]
         return args
     }
 }

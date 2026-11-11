@@ -9,6 +9,10 @@ A macOS app that compresses videos for use on websites.
 - Optional fast hardware encoding for H.264 and HEVC
 - HDR sources (iPhone HLG, HDR10) are converted to SDR; variable frame rate is
   made constant; output is always 8-bit 4:2:0 with faststart for MP4
+- Web bundle: WebM + MP4 + poster image in one go, with matching file names
+- Aim for a file size instead of a quality level (two-pass where the encoder allows)
+- Trim a start and end point per video; optional poster image
+- Copy HTML: a ready `<video>` tag with sources, codecs, size and poster
 - Settings apply to the whole batch, or select a video to give it its own
 - Originals are never overwritten: results get a `-web` suffix
 

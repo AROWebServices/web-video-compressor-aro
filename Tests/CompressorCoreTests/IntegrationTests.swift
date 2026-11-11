@@ -155,6 +155,100 @@ struct IntegrationTests {
         #expect(encoded.video?.pixelFormat == "yuv420p")
     }
 
+    private func export(_ source: URL, _ settings: EncodeSettings,
+                        trim: TrimRange? = nil) async throws -> ExportResult {
+        let info = try await compressor.probe(source)
+        let capabilities = try await compressor.capabilities()
+        let destinations = OutputNaming.destinations(for: source, settings: settings)
+        return try await compressor.export(input: source, info: info, settings: settings, trim: trim,
+                                           capabilities: capabilities, destinations: destinations) { _ in }
+    }
+
+    @Test(arguments: [OutputFormat.mp4H264, .mp4HEVC, .webmVP9])
+    func twoPassLandsNearTheTargetSize(format: OutputFormat) async throws {
+        defer { cleanUp() }
+        // Noise is incompressible, so the encoder really has to ration bits.
+        let source = folder.appendingPathComponent("noisy.mkv")
+        let made = try await ProcessRunner.run(tools.ffmpeg, [
+            "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=6",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+            "-vf", "noise=alls=40:allf=t", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "10",
+            "-c:a", "aac", source.path,
+        ])
+        try #require(made.status == 0)
+        let sourceSize = try #require((try FileManager.default.attributesOfItem(atPath: source.path))[.size] as? Int64)
+        try #require(sourceSize > 2_000_000, "test clip is too small to be a meaningful target-size test")
+
+        let result = try await export(source, EncodeSettings(format: format, useTargetSize: true, targetSizeMB: 1))
+        let size = try #require(result.videos.first?.size)
+        #expect(size > 700_000 && size < 1_100_000, "got \(size) bytes for a 1 MB target")
+        // Encoder statistics files must not be left next to the video.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .filter { $0.contains(".log") || $0.contains("stats") || $0.contains("tree") }
+        #expect(leftovers.isEmpty)
+    }
+
+    @Test func trimKeepsOnlyTheChosenPart() async throws {
+        defer { cleanUp() }
+        let source = try await makeSource(name: "source.mkv", size: "640x360", seconds: 6)
+        let result = try await export(source, EncodeSettings(), trim: TrimRange(start: 1, end: 3.5))
+        let encoded = try await compressor.probe(try #require(result.videos.first?.url))
+        #expect(abs(encoded.duration - 2.5) < 0.15)
+        #expect(encoded.audio != nil)
+    }
+
+    @Test func webBundleProducesBothVideosAPosterAndMarkup() async throws {
+        defer { cleanUp() }
+        let source = try await makeSource(name: "My Clip.mkv", size: "1280x720", seconds: 2)
+        var settings = EncodeSettings(format: .webBundle, maxResolution: .p480)
+        settings.apply(.hero)
+        settings.maxResolution = .p480
+        settings.audio = .remove
+        let result = try await export(source, settings)
+
+        #expect(result.videos.map(\.url.lastPathComponent) == ["My Clip-web.webm", "My Clip-web.mp4"])
+        let webm = try await compressor.probe(result.videos[0].url)
+        let mp4 = try await compressor.probe(result.videos[1].url)
+        #expect(webm.video?.codec == "vp9")
+        #expect(mp4.video?.codec == "h264")
+        #expect(webm.audio == nil && mp4.audio == nil)
+
+        let poster = try #require(result.poster)
+        #expect(poster.lastPathComponent == "My Clip-web.jpg")
+        let still = try await compressor.probe(poster)
+        #expect(still.video?.codec == "mjpeg")
+        #expect(still.video?.width == 854)
+        #expect(still.video?.height == 480)
+
+        #expect(result.html.contains(#"<source src="My%20Clip-web.webm" type='video/webm; codecs="vp9"'>"#))
+        #expect(result.html.contains(#"poster="My%20Clip-web.jpg""#))
+        #expect(result.html.contains(#"width="854" height="480""#))
+
+        // Running it again must not overwrite: the whole set gets a new name.
+        let again = try await export(source, settings)
+        #expect(again.allURLs.map(\.lastPathComponent)
+                == ["My Clip-web-2.webm", "My Clip-web-2.mp4", "My Clip-web-2.jpg"])
+    }
+
+    @Test func aFailedBundleLeavesNoFilesBehind() async throws {
+        defer { cleanUp() }
+        let source = try await makeSource(name: "source.mkv", size: "640x360")
+        let info = try await compressor.probe(source)
+        let capabilities = try await compressor.capabilities()
+        // The poster goes to a folder that does not exist, so the last step fails
+        // after both videos have been written.
+        let good = OutputNaming.destinations(for: source, settings: EncodeSettings(format: .webBundle))
+        let broken = ExportDestinations(videos: good.videos,
+                                        poster: folder.appendingPathComponent("missing/poster.jpg"))
+        await #expect(throws: (any Error).self) {
+            try await compressor.export(input: source, info: info, settings: EncodeSettings(format: .webBundle),
+                                        capabilities: capabilities, destinations: broken) { _ in }
+        }
+        for video in good.videos {
+            #expect(!FileManager.default.fileExists(atPath: video.url.path))
+        }
+    }
+
     @Test func handlesOddDimensionsAndNoAudio() async throws {
         defer { cleanUp() }
         let source = try await makeSource(name: "odd.mkv", size: "322x242", crop: "321:241", audio: false)

@@ -107,6 +107,7 @@ private struct QueueList: View {
                     .tag(item.id)
                     .contextMenu {
                         if item.result != nil {
+                            Button("Copy HTML") { model.copyHTML(for: item) }
                             Button("Reveal in Finder") { model.reveal(item) }
                         }
                         if item.isBusy {
@@ -200,12 +201,12 @@ private struct QueueRow: View {
                     .foregroundStyle(.secondary)
             }
         case .done(let result):
-            let larger = result.outputSize > item.size && item.size > 0
+            let larger = result.largestSize > item.size && item.size > 0
             Label(resultText(result), systemImage: larger ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.callout)
                 .foregroundStyle(larger ? .orange : .green)
                 .lineLimit(1)
-                .help(result.outputURL.path)
+                .help(result.allURLs.map(\.lastPathComponent).joined(separator: "\n"))
         case .failed(let summary, _):
             Text(summary)
                 .font(.system(.caption, design: .monospaced))
@@ -219,9 +220,15 @@ private struct QueueRow: View {
 
     /// What will happen to this video with the current settings.
     private var plan: String {
-        let settings = model.settings(for: item)
+        let settings = model.settings(for: item).adjusted(forSourceBytes: item.size)
         var parts = [settings.format.label]
         if let size = model.outputSize(for: item) { parts.append("\(size.width) × \(size.height)") }
+        if let target = settings.effectiveTargetSizeMB {
+            parts.append("about \(Format.megabytes(target))" + (settings.format == .webBundle ? " each" : ""))
+        }
+        if let duration = item.info?.duration, item.trim.resolved(duration: duration) != nil {
+            parts.append("trimmed to \(Format.duration(model.keptDuration(for: item)))")
+        }
         if item.override != nil { parts.append("own settings") }
         if item.info?.video?.isHDR == true {
             parts.append(model.capabilities?.hdrConversion == .unavailable
@@ -239,15 +246,30 @@ private struct QueueRow: View {
         return text
     }
 
-    private func resultText(_ result: CompressionResult) -> String {
-        let name = result.outputURL.lastPathComponent
-        let size = Format.bytes(result.outputSize)
-        guard item.size > 0 else { return "\(size)  ·  \(name)" }
-        let change = Double(item.size - result.outputSize) / Double(item.size) * 100
-        let verdict = change >= 0
+    private func verdict(_ size: Int64) -> String? {
+        guard item.size > 0 else { return nil }
+        let change = Double(item.size - size) / Double(item.size) * 100
+        return change >= 0
             ? "\(Int(change.rounded()))% smaller"
             : "\(Int((-change).rounded()))% larger than the original"
-        return "\(size)  ·  \(verdict)  ·  \(name)"
+    }
+
+    private func resultText(_ result: ExportResult) -> String {
+        if result.videos.count == 1, let file = result.videos.first {
+            var parts = [Format.bytes(file.size)]
+            if let verdict = verdict(file.size) { parts.append(verdict) }
+            parts.append(file.url.lastPathComponent)
+            if result.poster != nil { parts.append("poster") }
+            return parts.joined(separator: "  ·  ")
+        }
+        // A bundle: one entry per file, e.g. "WEBM 4.1 MB (91% smaller)".
+        var parts = result.videos.map { file in
+            let kind = file.url.pathExtension.uppercased()
+            let note = verdict(file.size).map { " (\($0))" } ?? ""
+            return "\(kind) \(Format.bytes(file.size))\(note)"
+        }
+        if result.poster != nil { parts.append("poster") }
+        return parts.joined(separator: "  ·  ")
     }
 
     @ViewBuilder private var actions: some View {
@@ -256,6 +278,9 @@ private struct QueueRow: View {
                 iconButton("doc.on.doc", "Copy the full FFmpeg log") { model.copyToClipboard(fullLog) }
             }
             if item.result != nil {
+                iconButton("chevron.left.forwardslash.chevron.right", "Copy HTML for this video") {
+                    model.copyHTML(for: item)
+                }
                 iconButton("magnifyingglass", "Reveal in Finder") { model.reveal(item) }
             }
             if item.isBusy {
@@ -325,7 +350,31 @@ private struct SettingsPanel: View {
             }
 
             Section {
-                if settings.format.hasQualitySetting {
+                if settings.format.supportsTargetSize {
+                    Picker("Aim for", selection: $model.editedSettings.useTargetSize) {
+                        Text("Quality").tag(false)
+                        Text("File size").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if settings.effectiveTargetSizeMB != nil || (settings.useTargetSize && settings.format.supportsTargetSize) {
+                    LabeledContent("Target size") {
+                        HStack(spacing: 4) {
+                            TextField("Target size", value: $model.editedSettings.targetSizeMB,
+                                      format: .number.precision(.fractionLength(0...1)))
+                                .labelsHidden()
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 64)
+                            Text("MB").foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(settings.format == .webBundle
+                         ? "Applies to each file in the bundle. Takes about twice as long."
+                         : "Takes about twice as long. Very small targets will look poor.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if settings.format.hasQualitySetting {
                     LabeledContent("Quality") {
                         Text(settings.qualityLabel).foregroundStyle(.secondary)
                     }
@@ -358,9 +407,69 @@ private struct SettingsPanel: View {
                     LabeledContent("Audio") { Text("None").foregroundStyle(.secondary) }
                 }
                 Toggle("Strip metadata", isOn: $model.editedSettings.stripMetadata)
+                if settings.format == .webBundle {
+                    LabeledContent("Poster image") { Text("Included").foregroundStyle(.secondary) }
+                } else if settings.format != .gif {
+                    Toggle("Poster image", isOn: $model.editedSettings.exportPoster)
+                }
+            }
+
+            if let item = model.selectedItem, let duration = item.info?.duration, duration > 0 {
+                TrimSection(item: item, duration: duration)
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Start and end points for the selected video, in seconds.
+private struct TrimSection: View {
+    @Environment(AppModel.self) private var model
+    @Bindable var item: QueueItem
+    let duration: Double
+
+    var body: some View {
+        Section("Trim \(item.url.lastPathComponent)") {
+            field("Start", value: $item.trim.start, placeholder: "0")
+            field("End", value: $item.trim.end, placeholder: String(format: "%.1f", duration))
+            HStack {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(isValid ? Color.secondary : Color.red)
+                Spacer()
+                if item.trim != TrimRange() {
+                    Button("Clear") { item.trim = TrimRange() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+            }
+        }
+        .disabled(item.isBusy)
+    }
+
+    private func field(_ label: String, value: Binding<Double?>, placeholder: String) -> some View {
+        LabeledContent(label) {
+            HStack(spacing: 4) {
+                TextField(label, value: value, format: .number.precision(.fractionLength(0...2)),
+                          prompt: Text(placeholder))
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 64)
+                Text("sec").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var hasValues: Bool { item.trim.start != nil || item.trim.end != nil }
+    private var isValid: Bool { !hasValues || item.trim.resolved(duration: duration) != nil
+        || ((item.trim.start ?? 0) <= 0 && (item.trim.end ?? duration) >= duration) }
+
+    private var summary: String {
+        guard hasValues else { return "The whole video (\(Format.duration(duration))) is kept." }
+        guard let kept = item.trim.resolved(duration: duration) else {
+            return isValid ? "The whole video is kept." : "End must come after start, within the video."
+        }
+        return String(format: "Keeps %.1f sec, from %.1f to %.1f.", kept.length, kept.start, kept.start + kept.length)
     }
 }
 
@@ -413,6 +522,10 @@ private struct BottomBar: View {
 enum Format {
     static func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+    }
+
+    static func megabytes(_ value: Double) -> String {
+        value == value.rounded() ? "\(Int(value)) MB" : String(format: "%.1f MB", value)
     }
 
     static func duration(_ seconds: Double) -> String {

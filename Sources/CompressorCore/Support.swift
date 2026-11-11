@@ -87,6 +87,48 @@ public enum OutputNaming {
     }
 }
 
+public struct VideoDestination: Sendable, Equatable {
+    public let format: OutputFormat
+    public let url: URL
+}
+
+/// Where one export will write its files.
+public struct ExportDestinations: Sendable, Equatable {
+    public let videos: [VideoDestination]
+    public let poster: URL?
+
+    public var all: [URL] { videos.map(\.url) + [poster].compactMap { $0 } }
+}
+
+extension OutputNaming {
+    /// Picks one base name that is free for every file the export produces, so a
+    /// bundle comes out as `clip-web.webm`, `clip-web.mp4` and `clip-web.jpg`.
+    public static func destinations(
+        for source: URL, settings: EncodeSettings, suffix: String = "-web", in directory: URL? = nil,
+        exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) -> ExportDestinations {
+        let folder = directory ?? source.deletingLastPathComponent()
+        let stem = source.deletingPathExtension().lastPathComponent + suffix
+        let formats = settings.format.components
+        func build(_ base: String) -> ExportDestinations {
+            ExportDestinations(
+                videos: formats.map {
+                    VideoDestination(format: $0,
+                                     url: folder.appendingPathComponent(base).appendingPathExtension($0.fileExtension))
+                },
+                poster: settings.wantsPoster
+                    ? folder.appendingPathComponent(base).appendingPathExtension("jpg") : nil)
+        }
+        var candidate = build(stem)
+        var n = 2
+        while candidate.all.contains(where: exists) {
+            candidate = build("\(stem)-\(n)")
+            n += 1
+        }
+        return candidate
+    }
+}
+
 // MARK: - Error logs
 
 public enum LogSummary {

@@ -9,7 +9,7 @@ enum ItemStatus: Equatable {
     case ready
     case waiting
     case encoding(fraction: Double)
-    case done(CompressionResult)
+    case done(ExportResult)
     case failed(summary: String, fullLog: String)
     case cancelled
     case unreadable(String)
@@ -27,11 +27,13 @@ final class QueueItem: Identifiable {
     var status: ItemStatus = .probing
     /// Settings for this video only; nil means "use the batch settings".
     var override: EncodeSettings?
+    /// Start and end points to keep; empty means the whole video.
+    var trim = TrimRange()
     var secondsRemaining: Double?
 
     @ObservationIgnored var task: Task<Void, Never>?
     @ObservationIgnored var started: Date?
-    @ObservationIgnored var reservedOutput: URL?
+    @ObservationIgnored var reservedOutputs: [String] = []
     @ObservationIgnored var runningOnHardware = false
 
     init(url: URL) {
@@ -54,7 +56,7 @@ final class QueueItem: Identifiable {
         }
     }
 
-    var result: CompressionResult? {
+    var result: ExportResult? {
         if case .done(let result) = status { return result }
         return nil
     }
@@ -144,7 +146,7 @@ final class AppModel {
         let finished = items.filter { $0.result != nil }
         guard !finished.isEmpty else { return nil }
         return (finished.reduce(0) { $0 + $1.size },
-                finished.reduce(0) { $0 + ($1.result?.outputSize ?? 0) })
+                finished.reduce(0) { $0 + ($1.result?.largestSize ?? 0) })
     }
 
     // MARK: FFmpeg location
@@ -308,7 +310,7 @@ final class AppModel {
         if self.capabilities != nil {
             guard capabilities.supports(settings.format) else {
                 item.status = .failed(
-                    summary: "This FFmpeg build has no \(settings.format.softwareEncoder) encoder.", fullLog: "")
+                    summary: "This FFmpeg build cannot produce \(settings.format.label).", fullLog: "")
                 return
             }
             if settings.usesHardwareEncoder && !capabilities.supportsHardware(settings.format) {
@@ -316,13 +318,17 @@ final class AppModel {
             }
         }
 
-        let output = OutputNaming.uniqueURL(
-            for: item.url, fileExtension: settings.format.fileExtension, in: outputFolder
+        // One free base name for every file of this export; names claimed by
+        // jobs that are still running count as taken.
+        let destinations = OutputNaming.destinations(
+            for: item.url, settings: settings, in: outputFolder
         ) { [reservedOutputs] candidate in
             FileManager.default.fileExists(atPath: candidate.path) || reservedOutputs.contains(candidate.path)
         }
-        reservedOutputs.insert(output.path)
-        item.reservedOutput = output
+        let claimed = destinations.all.map(\.path)
+        reservedOutputs.formUnion(claimed)
+        item.reservedOutputs = claimed
+        let trim = item.trim
         item.runningOnHardware = settings.usesHardwareEncoder
         item.status = .encoding(fraction: 0)
         item.secondsRemaining = nil
@@ -330,9 +336,9 @@ final class AppModel {
 
         item.task = Task {
             do {
-                let result = try await Compressor(tools: tools).compress(
-                    input: item.url, output: output, info: info, settings: settings,
-                    capabilities: capabilities
+                let result = try await Compressor(tools: tools).export(
+                    input: item.url, info: info, settings: settings, trim: trim,
+                    capabilities: capabilities, destinations: destinations
                 ) { fraction in
                     Task { @MainActor in item.updateProgress(fraction) }
                 }
@@ -348,8 +354,8 @@ final class AppModel {
             } catch {
                 item.status = .failed(summary: error.localizedDescription, fullLog: String(describing: error))
             }
-            reservedOutputs.remove(output.path)
-            item.reservedOutput = nil
+            reservedOutputs.subtract(claimed)
+            item.reservedOutputs = []
             pump()
         }
     }
@@ -367,13 +373,23 @@ final class AppModel {
     }
 
     func reveal(_ item: QueueItem) {
-        guard let url = item.result?.outputURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        guard let urls = item.result?.allURLs, !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
     func revealAll() {
-        let urls = items.compactMap { $0.result?.outputURL }
+        let urls = items.flatMap { $0.result?.allURLs ?? [] }
         if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+    }
+
+    func copyHTML(for item: QueueItem) {
+        if let html = item.result?.html { copyToClipboard(html) }
+    }
+
+    /// Length of the part of this video that will be kept, in seconds.
+    func keptDuration(for item: QueueItem) -> Double {
+        let duration = item.info?.duration ?? 0
+        return item.trim.resolved(duration: duration)?.length ?? duration
     }
 
     func copyToClipboard(_ text: String) {
